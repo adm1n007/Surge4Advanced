@@ -4,6 +4,7 @@
 #import <CommonCrypto/CommonDigest.h>
 #import <CommonCrypto/CommonCryptor.h>
 #include <mach-o/dyld.h>
+#include <dlfcn.h>
 
 @implementation NSMutableURLRequest(Curl)
 
@@ -47,6 +48,7 @@
 
 char LicEncContent[] = "\x03\x04\x02NSExtension";
 
+%group ObjcHook
 %hook SGNSARequestHelper 
 
 // Hooking a class method
@@ -128,27 +130,45 @@ char LicEncContent[] = "\x03\x04\x02NSExtension";
 }
 
 %end
-
+%end
 
 void *pEVP_DigestVerifyFinal = NULL;
 
+%group CHook
 %hookf(uint64_t, pEVP_DigestVerifyFinal, void *ctx, uint64_t a2, uint64_t a3) {
     %orig;
     NSLog(@"Bypassed surge lic sign check!");
     return 1;
 }
+%end
+
+static void doInitCHook(void) {
+    %init(CHook);
+}
 
 %ctor {
-    unsigned char needle[] = "\x08\x01\x40\xF9\xA8\x83\x1C\xF8\xFF\x07\x00\xB9\x00\x10\x40\xF9\x08\x00\x40\xF9\x18\x45\x40\xF9\xA8\x46\x40\x39\x08\x02\x08\x37";
-    intptr_t imgBase = (intptr_t)_dyld_get_image_vmaddr_slide(0) + 0x100000000LL;
-    intptr_t imgBase2 = (intptr_t)_dyld_get_image_header(0);
-    NSLog(@"Surge image base at %p %p", (void *)imgBase, (void *)imgBase2);
-    //NSLog(@"Surge hdr %x %x %x %x %x", *(uint32_t *)(imgBase + 0x236730), *(uint32_t *)(imgBase + 0x236734), *(uint32_t *)(imgBase + 0x236738), *(uint32_t *)(imgBase + 0x23673c), *(uint32_t *)(imgBase + 0x236740));
-    char *pNeedle = (char *)memmem((void *)imgBase, 0x400000, needle, sizeof(needle) - 1);
-    NSLog(@"found pNeedle at %p", pNeedle);
-    if(pNeedle == NULL) {
-        exit(0);
+    %init(ObjcHook);
+    NSComparisonResult comparisonResult = [[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] compare:@"4.14.0" options:NSNumericSearch];
+    if (comparisonResult == NSOrderedAscending) {
+        unsigned char needle[] = "\x08\x01\x40\xF9\xA8\x83\x1C\xF8\xFF\x07\x00\xB9\x00\x10\x40\xF9\x08\x00\x40\xF9\x18\x45\x40\xF9\xA8\x46\x40\x39\x08\x02\x08\x37";
+        intptr_t imgBase = (intptr_t)_dyld_get_image_vmaddr_slide(0) + 0x100000000LL;
+        intptr_t imgBase2 = (intptr_t)_dyld_get_image_header(0);
+        NSLog(@"Surge image base at %p %p", (void *)imgBase, (void *)imgBase2);
+        //NSLog(@"Surge hdr %x %x %x %x %x", *(uint32_t *)(imgBase + 0x236730), *(uint32_t *)(imgBase + 0x236734), *(uint32_t *)(imgBase + 0x236738), *(uint32_t *)(imgBase + 0x23673c), *(uint32_t *)(imgBase + 0x236740));
+        char *pNeedle = (char *)memmem((void *)imgBase, 0x400000, needle, sizeof(needle) - 1);
+        NSLog(@"found pNeedle at %p", pNeedle);
+        if (pNeedle == NULL) {
+            exit(0);
+        }
+        pEVP_DigestVerifyFinal = pNeedle - 0x2c;
+        doInitCHook();
     }
-    void *pEVP_DigestVerifyFinal = pNeedle - 0x2c;
-    %init;
+    else {
+        if ([NSProcessInfo.processInfo.processName isEqualToString:@"Surge-iOS"]) {
+            const char *imagename = [NSString stringWithFormat:@"%@/Frameworks/OpenSSL.framework/OpenSSL", NSBundle.mainBundle.bundlePath].UTF8String;
+            dlopen(imagename, 1);
+            pEVP_DigestVerifyFinal = MSFindSymbol(MSGetImageByName(imagename), "_EVP_DigestVerifyFinal");
+            doInitCHook();
+        }
+    }
 }

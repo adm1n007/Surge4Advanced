@@ -1,2 +1,5 @@
 .theos
+.vscode
+.git
+.github
 packages
